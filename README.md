@@ -209,12 +209,259 @@ Password: <decoded-password>
 
 ## Jenkinsfile
 
+### code checkout
+
+```
+pipeline {
+    agent any
+
+    stages {
+        stage('Checkout') {
+            steps {
+                git branch: 'main',
+                    credentialsId: 'git-cred',
+                    url: 'https://github.com/Reshufowzi/application-code.git'
+            }
+        }
+    }
+}
+```
+### Setting the image for build
+
 ```
 pipeline {
     agent any
 
     environment {
-        IMAGE_NAME = 'alphaimage'
+        IMAGE_NAME = 'mydockerimage'
+    }
+
+    stages {
+
+        stage("Checkout") {
+            steps {
+                git branch: 'main',
+                    credentialsId: 'git-cred',
+                    url: 'https://github.com/Reshufowzi/application-code.git'
+            }
+        }
+
+        stage('Set Image Tag') {
+            steps {
+                script {
+                    def shortHash = sh(
+                        script: "git rev-parse --short HEAD",
+                        returnStdout: true
+                    ).trim()
+
+                    env.IMAGE_TAG = "${BUILD_NUMBER}-${shortHash}"
+                    echo "Using image tag: ${env.IMAGE_TAG}"
+                }
+            }
+        }
+
+    }
+}
+```
+### added the sonarqube stage for securing the application
+
+```
+pipeline {
+    agent any
+
+    environment {
+        IMAGE_NAME = 'mydockerimage'
+        SONARQUBE_SERVER = 'SonarQubeServer'
+        PATH = "/opt/sonar-scanner/bin:${PATH}"
+    }
+
+    stages {
+
+        stage("Checkout") {
+            steps {
+                git branch: 'main',
+                    credentialsId: 'git-cred',
+                    url: 'https://github.com/Reshufowzi/application-code.git'
+            }
+        }
+
+        stage('Set Image Tag') {
+            steps {
+                script {
+                    def shortHash = sh(
+                        script: "git rev-parse --short HEAD",
+                        returnStdout: true
+                    ).trim()
+
+                    env.IMAGE_TAG = "${BUILD_NUMBER}-${shortHash}"
+                    echo "Using image tag: ${env.IMAGE_TAG}"
+                }
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv("${SONARQUBE_SERVER}") {
+                    sh 'sonar-scanner'
+                }
+            }
+        }
+
+    }
+}
+
+```
+### Build the docker image and Trivy image 
+
+```
+pipeline {
+    agent any
+
+    environment {
+        IMAGE_NAME = 'mydockerimage'
+        SONARQUBE_SERVER = 'SonarQubeServer'
+        PATH = "/opt/sonar-scanner/bin:${PATH}"
+    }
+
+    stages {
+
+        stage("Checkout") {
+            steps {
+                git branch: 'main',
+                    credentialsId: 'git-cred',
+                    url: 'https://github.com/Reshufowzi/application-code.git'
+            }
+        }
+
+        stage('Set Image Tag') {
+            steps {
+                script {
+                    def shortHash = sh(
+                        script: "git rev-parse --short HEAD",
+                        returnStdout: true
+                    ).trim()
+
+                    env.IMAGE_TAG = "${BUILD_NUMBER}-${shortHash}"
+                    echo "Using image tag: ${env.IMAGE_TAG}"
+                }
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv("${SONARQUBE_SERVER}") {
+                    sh "sonar-scanner"
+                }
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                echo "Using updated Image tag ${IMAGE_NAME}:${IMAGE_TAG}"
+
+                sh "docker build -t ${IMAGE_NAME}:${IMAGE_TAG} ."
+                sh "docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${IMAGE_NAME}:latest"
+            }
+        }
+
+        stage('Image Scan') {
+            steps {
+                sh "trivy image ${IMAGE_NAME}:${IMAGE_TAG} > report.txt"
+            }
+        }
+
+    }
+}
+
+```
+
+### Push to ECR in Aws
+
+```
+pipeline {
+    agent any
+
+    environment {
+        IMAGE_NAME = 'mydockerimage'
+        SONARQUBE_SERVER = 'SonarQubeServer'
+        PATH = "/opt/sonar-scanner/bin:${PATH}"
+        ECR_REPO = '128913199644.dkr.ecr.us-east-1.amazonaws.com/myecrrepo'
+        AWS_REGION = 'us-east-1'
+    }
+
+    stages {
+
+        stage("Checkout") {
+            steps {
+                git branch: 'main',
+                    credentialsId: 'git-cred',
+                    url: 'https://github.com/Reshufowzi/application-code.git'
+            }
+        }
+
+        stage('Set Image Tag') {
+            steps {
+                script {
+                    def shortHash = sh(
+                        script: "git rev-parse --short HEAD",
+                        returnStdout: true
+                    ).trim()
+
+                    env.IMAGE_TAG = "${BUILD_NUMBER}-${shortHash}"
+                    echo "Using image tag: ${env.IMAGE_TAG}"
+                }
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv("${SONARQUBE_SERVER}") {
+                    sh "sonar-scanner"
+                }
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                echo "Using updated Image tag ${IMAGE_NAME}:${IMAGE_TAG}"
+
+                sh "docker build -t ${IMAGE_NAME}:${IMAGE_TAG} ."
+                sh "docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${IMAGE_NAME}:latest"
+            }
+        }
+
+        stage('Image Scan') {
+            steps {
+                sh "trivy image ${IMAGE_NAME}:${IMAGE_TAG} > report.txt"
+            }
+        }
+
+        stage('Push to ECR') {
+            steps {
+                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-cred']]) {
+                    sh '''
+                        aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REPO
+                        docker tag $IMAGE_NAME:$IMAGE_TAG $ECR_REPO:$IMAGE_TAG
+                        docker push $ECR_REPO:$IMAGE_TAG
+
+                        docker tag $IMAGE_NAME:$IMAGE_TAG $ECR_REPO:latest
+                        docker push $ECR_REPO:latest
+                    '''
+                }
+            }
+        }
+
+    }
+}
+```
+
+### Final Jenkinsfile
+```
+pipeline {
+    agent any
+
+    environment {
+        IMAGE_NAME = 'mydockerimage'
         SONARQUBE_SERVER = 'SonarQubeServer'
         PATH = "/opt/sonar-scanner/bin:${PATH}"
         ECR_REPO = '128913199644.dkr.ecr.us-east-1.amazonaws.com/myecrrepo'
